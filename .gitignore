@@ -1,0 +1,15 @@
+# User data directory (contains login session)
+user_data/
+
+# Debug output
+debug.html
+
+# Dart/Pub dependencies
+.dart_tool/
+.packages
+pubspec.lock
+
+# IDE files
+.vscode/
+.idea/
+*.iml
