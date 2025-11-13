@@ -4,6 +4,9 @@ user_data/
 # Debug output
 debug.html
 
+# Batch send state file
+.send_state.json
+
 # Dart/Pub dependencies
 .dart_tool/
 .packages

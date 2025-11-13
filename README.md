@@ -16,19 +16,21 @@ dart pub get
 
 ## Usage
 
+### Single Message
+
 ```bash
 dart send_message.dart -p <phone_number> -m <message> [-i <image_path>]
 ```
 
-### Arguments
+#### Arguments
 
 - `-p, --phone`: Phone number to send the message to (required)
-- `-m, --message`: Message text to send (required)
+- `-m, --message`: Message text to send (optional if -i is provided)
 - `-i, --image`: Path to image file to attach (optional)
 - `-d, --debug`: Enable debug mode for troubleshooting (optional)
 - `-h, --help`: Show help message
 
-### Examples
+#### Examples
 
 ```bash
 # Send a simple text message
@@ -40,6 +42,69 @@ dart send_message.dart -p "+15551234567" -m "Check out this photo!" -i "/path/to
 # Send with debug mode enabled
 dart send_message.dart -p "555-123-4567" -m "Test message" --debug
 ```
+
+### Batch Sending
+
+Send the same message to multiple recipients with automatic state tracking and resume capability.
+
+```bash
+dart send_batch.dart -f <phones_file> -m <message> [-i <image_path>] [--dry-run]
+```
+
+#### Arguments
+
+- `-f, --phones-file`: Path to file containing phone numbers (newline-separated) (required)
+- `-m, --message`: Message text to send to all recipients (optional if -i is provided)
+- `-i, --image`: Path to image file to attach (optional)
+- `-s, --state-file`: Path to state tracking file (default: `.send_state.json`)
+- `-n, --dry-run`: Test mode - simulate without actually sending
+- `-d, --debug`: Enable debug mode for troubleshooting
+- `-h, --help`: Show help message
+
+#### Examples
+
+```bash
+# Test batch send (dry run)
+dart send_batch.dart -f phones.txt -m "Hello everyone!" --dry-run
+
+# Send batch message
+dart send_batch.dart -f phones.txt -m "Hello everyone!"
+
+# Send batch with image
+dart send_batch.dart -f phones.txt -m "Check this out!" -i "/path/to/image.jpg"
+
+# Resume a failed batch (uses saved state)
+dart send_batch.dart -f phones.txt -m "Hello everyone!"
+```
+
+#### Phone List Format
+
+Create a text file with one recipient per line. Two formats are supported:
+
+**Format 1: Name and Number (recommended)**
+```
+John Smith: 555-123-4567
+Jane Doe: +15551234568
+Bob Johnson: 555-123-4569
+```
+
+**Format 2: Phone Number Only**
+```
+555-123-4567
++15551234568
+555-123-4569
+```
+
+When using the name format, the names will be displayed in progress and error messages for easier tracking.
+
+#### Features
+
+- **State Tracking**: Automatically saves progress to `.send_state.json` (pending/sent/failed status)
+- **Resume Capability**: If interrupted, simply run the same command again to resume from where it left off
+- **Message Confirmation**: Verifies each message was sent before moving to the next recipient
+- **Error Handling**: On error, prompts user to Retry, Skip, or Abort
+- **Progress Display**: Shows current progress with percentage (e.g., [5/100 - 5.0%])
+- **Dry Run Mode**: Test the batch without actually sending messages
 
 ## How It Works
 
