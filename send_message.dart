@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:convert';
+import 'dart:async';
 import 'package:puppeteer/puppeteer.dart';
 import 'package:args/args.dart';
 
@@ -89,22 +90,56 @@ Future<void> main(List<String> arguments) async {
       timeout: Duration(seconds: 60));
 
     print('');
-    print('╔═══════════════════════════════════════════════════════════════╗');
-    print('║  BROWSER OPENED - COMPLETE SETUP BEFORE CONTINUING            ║');
-    print('╠═══════════════════════════════════════════════════════════════╣');
-    print('║  Take your time to:                                           ║');
-    print('║  1. Log in to your Google account if needed                   ║');
-    print('║  2. Pair with your phone using the QR code if needed          ║');
-    print('║  3. Wait for ALL messages to load completely                  ║');
-    print('║  4. Verify you can see the "Start chat" button                ║');
-    print('║                                                                ║');
-    print('║  The browser will stay open - take as long as you need!       ║');
-    print('║  ONLY press ENTER when the page is fully ready!               ║');
-    print('╚═══════════════════════════════════════════════════════════════╝');
+    print('Waiting for Google Messages to be ready...');
+    print('(If you need to log in or pair your phone, please do so now)');
     print('');
-    print('Press ENTER when ready to proceed with automation...');
 
-    stdin.readLineSync();
+    // Wait for the Start chat button to appear (indicates page is fully loaded)
+    print('Detecting when messages interface is ready...');
+    final startChatSelectors = [
+      '[data-e2e-start-button]',
+      'a[href*="conversations/new"]',
+      'a[href="#new"]',
+      'button[mattooltip="Start chat"]',
+      'button[aria-label="Start chat"]',
+      '[class*="fab"]',
+    ];
+
+    bool pageReady = false;
+    String? foundSelector;
+    for (var selector in startChatSelectors) {
+      try {
+        if (debugMode) print('  Checking for: $selector');
+        await page.waitForSelector(selector, timeout: Duration(seconds: 5));
+        print('✓ Google Messages is ready! (Found: $selector)');
+        pageReady = true;
+        foundSelector = selector;
+        await Future.delayed(Duration(milliseconds: 1000));
+        break;
+      } catch (e) {
+        if (debugMode) print('  Not found: $selector');
+        continue;
+      }
+    }
+
+    if (!pageReady) {
+      print('');
+      print('Could not detect ready state automatically.');
+      print('Please ensure you are logged in and the page is fully loaded.');
+      print('');
+      await waitForUserConfirmation();
+
+      // Try again to find the button after manual confirmation
+      for (var selector in startChatSelectors) {
+        try {
+          await page.waitForSelector(selector, timeout: Duration(seconds: 2));
+          foundSelector = selector;
+          break;
+        } catch (e) {
+          continue;
+        }
+      }
+    }
 
     print('Proceeding with automation...');
     print('');
@@ -126,41 +161,30 @@ Future<void> main(List<String> arguments) async {
       stdin.readLineSync();
     }
 
-    // Try to click the "Start chat" button
-    print('Looking for Start chat button...');
-    bool chatStarted = false;
-
-    // Try multiple selectors for the start chat button
-    final startChatSelectors = [
-      'a[href="#new"]',
-      'button[mattooltip="Start chat"]',
-      'button[aria-label="Start chat"]',
-      'mw-fab-speed-dial button',
-      'mw-fab-speed-dial-trigger',
-      '[class*="fab"]',
-      'a[aria-label*="Start"]',
-      'button[aria-label*="Start"]',
-      '[data-e2e-start-chat]',
-      'mw-start-chat-fab',
-    ];
-
-    for (var selector in startChatSelectors) {
+    // Click the "Start chat" button
+    print('Clicking Start chat button...');
+    if (foundSelector != null) {
       try {
-        if (debugMode) print('Trying selector: $selector');
-        await page.waitForSelector(selector, timeout: Duration(seconds: 2));
-        await page.click(selector);
-        print('✓ Clicked start chat button: $selector');
-        chatStarted = true;
-        await Future.delayed(Duration(milliseconds: 1500));
-        break;
-      } catch (e) {
-        if (debugMode) print('  ✗ Selector not found: $selector');
-        continue;
-      }
-    }
+        // Use JavaScript to click the element (more reliable than Puppeteer's click)
+        await page.evaluate('''(selector) => {
+          const element = document.querySelector(selector);
+          if (element) {
+            element.scrollIntoView();
+            element.click();
+            return true;
+          }
+          return false;
+        }''', args: [foundSelector]);
 
-    if (!chatStarted) {
-      print('ERROR: Could not find start chat button automatically.');
+        print('✓ Clicked start chat button');
+        await Future.delayed(Duration(milliseconds: 2000));
+      } catch (e) {
+        print('ERROR: Could not click start chat button: $e');
+        await browser.close();
+        exit(1);
+      }
+    } else {
+      print('ERROR: Could not find start chat button.');
       print('Please run with --debug flag to capture page structure:');
       print('  dart send_message.dart -p "$phoneNumber" -m "$messageText" --debug');
       await browser.close();
@@ -170,17 +194,65 @@ Future<void> main(List<String> arguments) async {
     // Type the phone number
     print('Typing phone number: $phoneNumber');
     await page.keyboard.type(phoneNumber, delay: Duration(milliseconds: 50));
-    await Future.delayed(Duration(milliseconds: 1000));
+
+    // Wait for autocomplete to appear
+    print('Waiting for autocomplete...');
+    await Future.delayed(Duration(milliseconds: 2000));
 
     // Press Enter to confirm the recipient
     print('Confirming recipient...');
     await page.keyboard.press(Key.enter);
 
-    // Wait longer for the conversation to load
-    // After pressing Enter, Google Messages opens the conversation
-    // and the focus is already in the message field
-    print('Waiting for conversation to load...');
-    await Future.delayed(Duration(milliseconds: 2500));
+    // Give extra time for conversation to open
+    await Future.delayed(Duration(milliseconds: 2000));
+
+    // Wait for the message input box to appear
+    print('Waiting for message input box...');
+    final messageFieldSelectors = [
+      '[data-e2e-message-input-box]',
+      'div[contenteditable="true"]',
+      '[role="textbox"]',
+      '[aria-label*="Text message"]',
+    ];
+
+    bool messageFieldFound = false;
+    String? messageFieldSelector;
+    for (var selector in messageFieldSelectors) {
+      try {
+        if (debugMode) print('  Trying to wait for: $selector');
+        await page.waitForSelector(selector, timeout: Duration(seconds: 15));
+        messageFieldSelector = selector;
+        messageFieldFound = true;
+        print('✓ Message field loaded: $selector');
+        await Future.delayed(Duration(milliseconds: 500));
+        break;
+      } catch (e) {
+        if (debugMode) print('  ✗ Timeout waiting for: $selector');
+        continue;
+      }
+    }
+
+    if (!messageFieldFound || messageFieldSelector == null) {
+      print('ERROR: Could not find message field. The conversation may not have loaded properly.');
+      await browser.close();
+      exit(1);
+    }
+
+    // Click the message field to focus it
+    print('Clicking message field...');
+    final field = await page.$(messageFieldSelector);
+    if (field != null) {
+      await field.click();
+      print('✓ Message field focused');
+      await Future.delayed(Duration(milliseconds: 500));
+    }
+
+    // Type the message text first if provided
+    if (messageText != null && messageText.isNotEmpty) {
+      print('Typing message text...');
+      await page.keyboard.type(messageText, delay: Duration(milliseconds: 30));
+      await Future.delayed(Duration(milliseconds: 500));
+    }
 
     // Attach image if provided using drag-and-drop simulation
     if (imagePath != null) {
@@ -191,35 +263,7 @@ Future<void> main(List<String> arguments) async {
       final imageBase64 = base64Encode(imageBytes);
       final imageName = imagePath.split('/').last;
 
-      // Wait a bit for the page to be ready
-      await Future.delayed(Duration(milliseconds: 1000));
-
       try {
-        // Find the message input area to drop the image
-        final dropTargetSelectors = [
-          'div[contenteditable="true"]',
-          '[role="textbox"]',
-          'mw-message-compose',
-          '.compose-container',
-        ];
-
-        ElementHandle? dropTarget;
-        for (var selector in dropTargetSelectors) {
-          try {
-            dropTarget = await page.$(selector);
-            if (dropTarget != null) {
-              if (debugMode) print('  Found drop target: $selector');
-              break;
-            }
-          } catch (e) {
-            continue;
-          }
-        }
-
-        if (dropTarget == null) {
-          print('  Warning: Could not find drop target, using document body');
-        }
-
         // Simulate drag-and-drop by triggering drop event with file data
         final scriptWithData = '''
           (async () => {
@@ -232,7 +276,7 @@ Future<void> main(List<String> arguments) async {
               const blob = await response.blob();
               const file = new File([blob], imageName, { type: blob.type });
 
-              // Find the drop target
+              // Find the drop target (message compose area)
               const dropTarget = document.querySelector('[contenteditable="true"]') ||
                                 document.querySelector('[role="textbox"]') ||
                                 document.body;
@@ -290,11 +334,10 @@ Future<void> main(List<String> arguments) async {
       }
     }
 
-    // Type the message if provided
-    if (messageText != null && messageText.isNotEmpty) {
-      print('Typing message...');
-      await page.keyboard.type(messageText, delay: Duration(milliseconds: 30));
-      await Future.delayed(Duration(milliseconds: 800));
+    // Wait a moment to ensure both text and image are in the compose area
+    if (imagePath != null && messageText != null) {
+      print('Waiting for image and text to compose together...');
+      await Future.delayed(Duration(milliseconds: 1000));
     }
 
     // Send with Ctrl+Enter
@@ -318,5 +361,77 @@ Future<void> main(List<String> arguments) async {
   } finally {
     await browser.close();
     print('Browser closed.');
+  }
+}
+
+/// Waits for user confirmation using dual approach:
+/// 1. Tries stdin.readLineSync() first (works in terminal)
+/// 2. Falls back to HTTP server (works everywhere including automation tools)
+Future<void> waitForUserConfirmation() async {
+  final completer = Completer<void>();
+  HttpServer? server;
+
+  try {
+    // Start a local HTTP server on a random available port
+    server = await HttpServer.bind('127.0.0.1', 0);
+    final port = server.port;
+
+    print('╔════════════════════════════════════════════════════════════════╗');
+    print('║  READY TO PROCEED?                                             ║');
+    print('╠════════════════════════════════════════════════════════════════╣');
+    print('║  Option 1: Press ENTER to continue                             ║');
+    print('║  Option 2: Visit http://127.0.0.1:$port/ready${' ' * (24 - port.toString().length)}║');
+    print('╚════════════════════════════════════════════════════════════════╝');
+    print('');
+
+    // Listen for HTTP requests
+    server.listen((HttpRequest request) async {
+      if (request.uri.path == '/ready' || request.uri.path == '/') {
+        request.response
+          ..statusCode = 200
+          ..headers.contentType = ContentType.html
+          ..write('''
+            <!DOCTYPE html>
+            <html>
+            <head><title>Ready</title></head>
+            <body style="font-family: Arial; text-align: center; padding: 50px;">
+              <h1>✓ Signal Received!</h1>
+              <p>You can close this window.</p>
+              <script>setTimeout(() => window.close(), 2000);</script>
+            </body>
+            </html>
+          ''');
+        await request.response.close();
+
+        if (!completer.isCompleted) {
+          completer.complete();
+        }
+      }
+    });
+
+    // Also try to listen for stdin in parallel (works in terminal)
+    if (stdin.hasTerminal) {
+      try {
+        stdin.echoMode = true;
+        stdin.lineMode = true;
+      } catch (e) {
+        // Can't set terminal modes, but we'll still try to read
+      }
+
+      // Read stdin in the background
+      stdin.first.then((_) {
+        if (!completer.isCompleted) {
+          completer.complete();
+        }
+      }).catchError((_) {
+        // Stdin failed, that's okay - HTTP will work
+      });
+    }
+
+    // Wait for either stdin or HTTP signal
+    await completer.future;
+
+  } finally {
+    await server?.close();
   }
 }
