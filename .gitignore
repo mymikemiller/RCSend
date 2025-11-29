@@ -16,3 +16,5 @@ pubspec.lock
 .vscode/
 .idea/
 *.iml
+
+.local-chrome

@@ -7,7 +7,8 @@ import 'package:args/args.dart';
 Future<void> main(List<String> arguments) async {
   final parser = ArgParser()
     ..addOption('phone', abbr: 'p', help: 'Phone number to send message to', mandatory: true)
-    ..addOption('message', abbr: 'm', help: 'Message text to send (optional if -i is provided)')
+    ..addOption('message', abbr: 'm', help: 'Message text to send (optional if -i or -f is provided)')
+    ..addOption('file', abbr: 'f', help: 'Path to file containing message text')
     ..addOption('image', abbr: 'i', help: 'Path to image file to attach')
     ..addFlag('help', abbr: 'h', help: 'Show this help message', negatable: false)
     ..addFlag('debug', abbr: 'd', help: 'Enable debug mode', negatable: false);
@@ -28,13 +29,34 @@ Future<void> main(List<String> arguments) async {
   }
 
   final phoneNumber = argResults['phone'] as String;
-  final messageText = argResults['message'] as String?;
+  final messageTextArg = argResults['message'] as String?;
+  final messageFilePath = argResults['file'] as String?;
   final imagePath = argResults['image'] as String?;
   final debugMode = argResults['debug'] as bool;
 
+  // Validate that at most one of -m or -f is provided
+  if (messageTextArg != null && messageFilePath != null) {
+    print('Error: Cannot use both -m (message) and -f (file) at the same time');
+    print('');
+    print(parser.usage);
+    exit(1);
+  }
+
+  // Load message text from file if -f is provided
+  String? messageText = messageTextArg;
+  if (messageFilePath != null) {
+    final messageFile = File(messageFilePath);
+    if (!messageFile.existsSync()) {
+      print('Error: Message file not found at: $messageFilePath');
+      exit(1);
+    }
+    messageText = messageFile.readAsStringSync();
+    print('Message loaded from file: $messageFilePath');
+  }
+
   // Validate that at least one of message or image is provided
   if (messageText == null && imagePath == null) {
-    print('Error: Must provide either -m (message) or -i (image), or both');
+    print('Error: Must provide either -m (message), -f (file), or -i (image), or a combination');
     print('');
     print(parser.usage);
     exit(1);
