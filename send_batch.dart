@@ -323,7 +323,7 @@ Future<void> main(List<String> arguments) async {
         print('✓ Google Messages is ready! (Found: $selector)');
         pageReady = true;
         foundSelector = selector;
-        await Future.delayed(Duration(milliseconds: 1000));
+        await Future.delayed(Duration(milliseconds: 500));
         break;
       } catch (e) {
         if (debugMode) print('  Not found: $selector');
@@ -498,14 +498,14 @@ Future<bool> sendMessage({
       }
 
       if (debugMode) print('  Clicked Start group chat button: $groupChatClicked');
-      await Future.delayed(Duration(milliseconds: 1500));
+      await Future.delayed(Duration(milliseconds: 700));
 
       // Type all phone numbers and press Enter after each to trigger group suggestions
       for (int i = 0; i < phoneNumbers.length; i++) {
         await page.keyboard.type(phoneNumbers[i], delay: Duration(milliseconds: 50));
-        await Future.delayed(Duration(milliseconds: 1500));
+        await Future.delayed(Duration(milliseconds: 700));
         await page.keyboard.press(Key.enter);
-        await Future.delayed(Duration(milliseconds: 1000));
+        await Future.delayed(Duration(milliseconds: 700));
       }
 
       // Wait for group suggestions to appear (Google Messages can be slow)
@@ -521,7 +521,7 @@ Future<bool> sendMessage({
       // await Future.delayed(Duration(milliseconds: 500));
 
       // Wait extra time for groups to appear
-      await Future.delayed(Duration(seconds: 3));
+      await Future.delayed(Duration(seconds: 2));
 
       // Check if there's an existing group with these exact participants
       final existingGroupFound = await page.evaluate('''() => {
@@ -538,7 +538,7 @@ Future<bool> sendMessage({
 
       if (existingGroupFound) {
         if (debugMode) print('  Found existing group conversation, checking participants...');
-        await Future.delayed(Duration(milliseconds: 2000));
+        await Future.delayed(Duration(milliseconds: 1000));
 
         // Click conversation menu to open details
         final menuClicked = await page.evaluate('''() => {
@@ -551,7 +551,7 @@ Future<bool> sendMessage({
         }''');
 
         if (menuClicked) {
-          await Future.delayed(Duration(milliseconds: 1000));
+          await Future.delayed(Duration(milliseconds: 500));
 
           // Click Details button
           final detailsClicked = await page.evaluate('''() => {
@@ -564,7 +564,7 @@ Future<bool> sendMessage({
           }''');
 
           if (detailsClicked) {
-            await Future.delayed(Duration(milliseconds: 2000));
+            await Future.delayed(Duration(milliseconds: 1000));
 
             // Get all participant numbers from details
             final participantNumbers = await page.evaluate('''() => {
@@ -593,7 +593,7 @@ Future<bool> sendMessage({
 
               // Close details and return to conversation
               await page.keyboard.press(Key.escape);
-              await Future.delayed(Duration(milliseconds: 1000));
+              await Future.delayed(Duration(milliseconds: 500));
 
               // We're already in the right conversation, skip group creation
             } else {
@@ -601,16 +601,16 @@ Future<bool> sendMessage({
 
               // Close details and go back
               await page.keyboard.press(Key.escape);
-              await Future.delayed(Duration(milliseconds: 500));
+              await Future.delayed(Duration(milliseconds: 250));
               await page.keyboard.press(Key.escape);
-              await Future.delayed(Duration(milliseconds: 1000));
+              await Future.delayed(Duration(milliseconds: 500));
 
               // Need to start over with group creation
               await page.evaluate('''(selector) => {
                 const element = document.querySelector(selector);
                 if (element) element.click();
               }''', args: [startChatSelector]);
-              await Future.delayed(Duration(milliseconds: 2000));
+              await Future.delayed(Duration(milliseconds: 1000));
 
               final groupChatRetry = await page.evaluate('''() => {
                 const btn = document.querySelector('[data-e2e-start-group-chat-button]');
@@ -625,14 +625,14 @@ Future<bool> sendMessage({
                 throw Exception('Could not restart group chat creation');
               }
 
-              await Future.delayed(Duration(milliseconds: 1500));
+              await Future.delayed(Duration(milliseconds: 700));
 
               // Add all recipients properly this time
               for (int i = 0; i < phoneNumbers.length; i++) {
                 await page.keyboard.type(phoneNumbers[i], delay: Duration(milliseconds: 50));
-                await Future.delayed(Duration(milliseconds: 2500));
+                await Future.delayed(Duration(milliseconds: 1200));
                 await page.keyboard.press(Key.enter);
-                await Future.delayed(Duration(milliseconds: 2000));
+                await Future.delayed(Duration(milliseconds: 1000));
                 if (debugMode) print('  Added recipient ${i + 1}: ${phoneNumbers[i]}');
               }
             }
@@ -645,7 +645,7 @@ Future<bool> sendMessage({
 
       // Click "Next" button (may need to click twice - once to show group name field, once to skip it)
       for (int clickCount = 0; clickCount < 2; clickCount++) {
-        await Future.delayed(Duration(milliseconds: 500));
+        await Future.delayed(Duration(milliseconds: 250));
 
         final nextClicked = await page.evaluate('''() => {
           const selectors = [
@@ -666,12 +666,12 @@ Future<bool> sendMessage({
 
         if (nextClicked != null) {
           if (debugMode) print('  Clicked Next button (${clickCount + 1}/2): $nextClicked');
-          await Future.delayed(Duration(milliseconds: 1500));
+          await Future.delayed(Duration(milliseconds: 700));
         }
       }
 
       // Wait for the message input screen to load after clicking Next twice
-      await Future.delayed(Duration(milliseconds: 2000));
+      await Future.delayed(Duration(milliseconds: 1000));
     } else {
       // Single recipient - use regular flow
       if (debugMode) print('  Single recipient, typing number...');
@@ -679,17 +679,17 @@ Future<bool> sendMessage({
 
       // Wait for autocomplete to appear
       if (debugMode) print('  Waiting for autocomplete...');
-      await Future.delayed(Duration(milliseconds: 3000));
+      await Future.delayed(Duration(milliseconds: 1500));
 
       // Press Down arrow to select from autocomplete, then Enter
       if (debugMode) print('  Selecting from autocomplete...');
       await page.keyboard.press(Key.arrowDown);
-      await Future.delayed(Duration(milliseconds: 500));
+      await Future.delayed(Duration(milliseconds: 250));
       await page.keyboard.press(Key.enter);
 
       // Wait for conversation to open
       if (debugMode) print('  Waiting for conversation to open...');
-      await Future.delayed(Duration(milliseconds: 7000)); // Increased wait time
+      await Future.delayed(Duration(milliseconds: 3000)); // Increased wait time
       if (debugMode) print('  Conversation should be open...');
     }
 
@@ -710,7 +710,7 @@ Future<bool> sendMessage({
         messageFieldSelector = selector;
         messageFieldFound = true;
         if (debugMode) print('  ✓ Found message field: $selector');
-        await Future.delayed(Duration(milliseconds: 500));
+        await Future.delayed(Duration(milliseconds:250));
         break;
       } catch (e) {
         if (debugMode) print('  ✗ Not found: $selector');
@@ -726,7 +726,7 @@ Future<bool> sendMessage({
     final field = await page.$(messageFieldSelector);
     if (field != null) {
       await field.click();
-      await Future.delayed(Duration(milliseconds: 500));
+      await Future.delayed(Duration(milliseconds: 250));
     }
 
     // Insert message text FIRST if provided (before image)
@@ -739,7 +739,7 @@ Future<bool> sendMessage({
       }''', args: [messageText]);
 
       // Wait a moment for clipboard to be set
-      await Future.delayed(Duration(milliseconds: 300));
+      await Future.delayed(Duration(milliseconds: 150));
 
       // Ensure the field is focused
       final field = await page.$(messageFieldSelector);
@@ -772,7 +772,7 @@ Future<bool> sendMessage({
         if (fileInput != null) {
           await fileInput.uploadFile([File(imagePath)]);
           if (debugMode) print('  Image uploaded via file input');
-          await Future.delayed(Duration(milliseconds: 3000));
+          await Future.delayed(Duration(milliseconds: 1500));
         }
       } else {
         // Fallback to drop/paste method
@@ -824,7 +824,7 @@ Future<bool> sendMessage({
 
         await page.evaluate(scriptWithData);
         if (debugMode) print('  Image attached via drop/paste, waiting for processing...');
-        await Future.delayed(Duration(milliseconds: 5000)); // Increased wait time for image to fully load
+        await Future.delayed(Duration(milliseconds: 2500)); // Increased wait time for image to fully load
       }
 
       // Debug: Check if image was actually attached
@@ -844,7 +844,7 @@ Future<bool> sendMessage({
     // Wait a moment to ensure both text and image are in the compose area
     if (imagePath != null && messageText != null) {
       if (debugMode) print('  Waiting for text and image to be ready...');
-      await Future.delayed(Duration(milliseconds: 1500));
+      await Future.delayed(Duration(milliseconds: 700));
     }
 
     // Debug: Check what's in the compose area
@@ -923,7 +923,7 @@ Future<bool> sendMessage({
       }
     } else {
       // For image-only messages, just wait a bit longer
-      await Future.delayed(Duration(seconds: 2));
+      await Future.delayed(Duration(seconds: 1));
     }
 
     // Navigate back to main screen for next message
@@ -933,7 +933,7 @@ Future<bool> sendMessage({
 
     // Wait for start chat button again
     await page.waitForSelector(startChatSelector, timeout: Duration(seconds: 10));
-    await Future.delayed(Duration(milliseconds: 1000));
+    await Future.delayed(Duration(milliseconds: 500));
 
     return true;
 
@@ -948,8 +948,8 @@ Future<bool> sendMessage({
 /// Waits for and verifies that the message was sent by looking for the confirmation div
 Future<bool> waitForMessageConfirmation(Page page, String messageText, bool debugMode) async {
   try {
-    // Wait up to 15 seconds for the message to appear in the conversation
-    final timeout = DateTime.now().add(Duration(seconds: 15));
+    // Wait up to 7 seconds for the message to appear in the conversation
+    final timeout = DateTime.now().add(Duration(seconds: 7));
 
     // Extract first line of message for easier matching
     final firstLine = messageText.split('\n')[0];
@@ -995,7 +995,7 @@ Future<bool> waitForMessageConfirmation(Page page, String messageText, bool debu
         return true;
       }
 
-      await Future.delayed(Duration(milliseconds: 500));
+      await Future.delayed(Duration(milliseconds: 250));
     }
 
     if (debugMode) print('    Debug: Message confirmation NOT found after timeout');
