@@ -2,6 +2,13 @@
 
 A Dart script that uses Puppeteer to automate sending text messages through Google Messages Web (messages.google.com).
 
+## Example usage
+
+```
+rm .send_state.json
+dart send_batch.dart -p recipients.txt -f message.txt -i ai_filmmaking.jpg
+```
+
 ## Prerequisites
 
 - Dart SDK 3.0 or higher
