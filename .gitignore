@@ -18,3 +18,5 @@ pubspec.lock
 *.iml
 
 .local-chrome
+message.txt
+recipients.txt

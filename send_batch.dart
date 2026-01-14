@@ -503,9 +503,9 @@ Future<bool> sendMessage({
       // Type all phone numbers and press Enter after each to trigger group suggestions
       for (int i = 0; i < phoneNumbers.length; i++) {
         await page.keyboard.type(phoneNumbers[i], delay: Duration(milliseconds: 50));
-        await Future.delayed(Duration(milliseconds: 350));
+        await Future.delayed(Duration(milliseconds: 1000));
         await page.keyboard.press(Key.enter);
-        await Future.delayed(Duration(milliseconds: 350));
+        await Future.delayed(Duration(milliseconds: 1000));
       }
 
       // Wait for group suggestions to appear (Google Messages can be slow)
