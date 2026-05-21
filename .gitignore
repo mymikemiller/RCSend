@@ -13,6 +13,7 @@ debug.html
 pubspec.lock
 
 # IDE files
+.DS_Store
 .vscode/
 .idea/
 *.iml
@@ -20,3 +21,5 @@ pubspec.lock
 .local-chrome
 message.txt
 recipients.txt
+*.jpg
+*.jpeg
