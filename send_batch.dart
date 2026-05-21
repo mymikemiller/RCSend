@@ -39,6 +39,7 @@ class SendState {
 
   Map<String, dynamic> toJson() => {
     'phoneStatus': phoneStatus,
+    'savedAt': DateTime.now().toIso8601String(),
   };
 
   void save(String filePath) {
@@ -46,10 +47,16 @@ class SendState {
   }
 
   static SendState load(String filePath) {
-    if (!File(filePath).existsSync()) {
+    final file = File(filePath);
+    if (!file.existsSync()) {
       return SendState();
     }
-    final json = jsonDecode(File(filePath).readAsStringSync());
+    final age = DateTime.now().difference(file.lastModifiedSync());
+    if (age.inHours >= 24) {
+      print('State file is ${age.inHours} hours old (>24h) — starting fresh.');
+      return SendState();
+    }
+    final json = jsonDecode(file.readAsStringSync());
     return SendState.fromJson(json);
   }
 }
@@ -266,6 +273,7 @@ Future<void> main(List<String> arguments) async {
   // Launch browser
   print('Starting browser automation...');
   final browser = await puppeteer.launch(
+    executablePath: '.local-chrome/138.0.7204.94/chrome-mac-x64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
     headless: false,
     userDataDir: './user_data',
     args: [
@@ -536,112 +544,163 @@ Future<bool> sendMessage({
         return false;
       }''');
 
+      bool useExistingGroup = false;
+
       if (existingGroupFound) {
-        if (debugMode) print('  Found existing group conversation, checking participants...');
+        if (debugMode) print('  Found existing group conversation in suggestions, verifying member count...');
         await Future.delayed(Duration(milliseconds: 500));
 
-        // Click conversation menu to open details
-        final menuClicked = await page.evaluate('''() => {
-          const menuBtn = document.querySelector('[data-e2e-conversation-menu-button]');
-          if (menuBtn) {
-            menuBtn.click();
-            return true;
+        // Clicking a group suggestion in the creation form populates it with that group's
+        // members as recipient chips — we stay in the creation form, not a conversation view.
+        // Count chips to verify member count before proceeding.
+        final chipCountRaw = await page.evaluate('''() => {
+          const selectors = [
+            '[data-e2e-chip]',
+            'mat-chip',
+            'mat-chip-row',
+            'mat-chip-option',
+            '.mat-chip',
+          ];
+          for (const sel of selectors) {
+            const chips = document.querySelectorAll(sel);
+            if (chips.length > 0) return chips.length;
           }
-          return false;
+          return 0;
         }''');
+        final chipCount = chipCountRaw is int ? chipCountRaw : (chipCountRaw is num ? chipCountRaw.toInt() : 0);
 
-        if (menuClicked) {
+        if (debugMode) print('  Recipient chip count: $chipCount (expected ${phoneNumbers.length})');
+
+        if (chipCount == phoneNumbers.length) {
+          if (debugMode) print('  ✓ Member count matches! Using existing group.');
+          useExistingGroup = true;
+        } else if (chipCount > phoneNumbers.length) {
+          if (debugMode) print('  ✗ Group has extra members ($chipCount > ${phoneNumbers.length}). Will create new group.');
+          // Escape out of the current selection to allow restart
+          await page.keyboard.press(Key.escape);
           await Future.delayed(Duration(milliseconds: 250));
+        } else {
+          // chipCount == 0: chips not found — may have navigated into a conversation view.
+          // Fall back to menu→details verification.
+          if (debugMode) print('  No chips found (chipCount: $chipCount), trying menu/details verification...');
 
-          // Click Details button
-          final detailsClicked = await page.evaluate('''() => {
-            const detailsBtn = document.querySelector('[data-e2e-details-button]');
-            if (detailsBtn) {
-              detailsBtn.click();
+          final menuClicked = await page.evaluate('''() => {
+            const menuBtn = document.querySelector('[data-e2e-conversation-menu-button]');
+            if (menuBtn) {
+              menuBtn.click();
               return true;
             }
             return false;
           }''');
 
-          if (detailsClicked) {
-            await Future.delayed(Duration(milliseconds: 500));
+          if (menuClicked) {
+            await Future.delayed(Duration(milliseconds: 250));
 
-            // Get all participant numbers from details
-            final participantNumbers = await page.evaluate('''() => {
-              const participants = Array.from(document.querySelectorAll('[data-e2e-details-participant-number]'));
-              return participants.map(p => p.textContent.trim());
+            final detailsClicked = await page.evaluate('''() => {
+              const detailsBtn = document.querySelector('[data-e2e-details-button]');
+              if (detailsBtn) {
+                detailsBtn.click();
+                return true;
+              }
+              return false;
             }''');
 
-            if (debugMode) print('  Group participants: $participantNumbers');
-
-            // Normalize and compare phone numbers (strip non-digits, then remove leading 1 for US numbers)
-            String normalizePhone(String phone) {
-              var digits = phone.replaceAll(RegExp(r'[^\d]'), '');
-              // Remove leading 1 (US country code) if it's an 11-digit number
-              if (digits.length == 11 && digits.startsWith('1')) {
-                digits = digits.substring(1);
-              }
-              return digits;
-            }
-
-            final normalizedExpected = phoneNumbers.map(normalizePhone).toSet();
-            final normalizedFound = (participantNumbers as List).map((n) => normalizePhone(n.toString())).toSet();
-
-            if (normalizedExpected.length == normalizedFound.length &&
-                normalizedExpected.difference(normalizedFound).isEmpty) {
-              if (debugMode) print('  ✓ Existing group matches! Using this conversation.');
-
-              // Close details and return to conversation
-              await page.keyboard.press(Key.escape);
-              await Future.delayed(Duration(milliseconds: 250));
-
-              // We're already in the right conversation, skip group creation
-            } else {
-              if (debugMode) print('  ✗ Group participants don\'t match. Creating new group...');
-
-              // Close details and go back
-              await page.keyboard.press(Key.escape);
-              await Future.delayed(Duration(milliseconds: 125));
-              await page.keyboard.press(Key.escape);
-              await Future.delayed(Duration(milliseconds: 250));
-
-              // Need to start over with group creation
-              await page.evaluate('''(selector) => {
-                const element = document.querySelector(selector);
-                if (element) element.click();
-              }''', args: [startChatSelector]);
+            if (detailsClicked) {
               await Future.delayed(Duration(milliseconds: 500));
 
-              final groupChatRetry = await page.evaluate('''() => {
-                const btn = document.querySelector('[data-e2e-start-group-chat-button]');
-                if (btn) {
-                  btn.click();
-                  return true;
-                }
-                return false;
+              final participantNumbers = await page.evaluate('''() => {
+                const participants = Array.from(document.querySelectorAll('[data-e2e-details-participant-number]'));
+                return participants.map(p => p.textContent.trim());
               }''');
 
-              if (!groupChatRetry) {
-                throw Exception('Could not restart group chat creation');
+              if (debugMode) print('  Group participants from details: $participantNumbers');
+
+              String normalizePhone(String phone) {
+                var digits = phone.replaceAll(RegExp(r'[^\d]'), '');
+                if (digits.length == 11 && digits.startsWith('1')) {
+                  digits = digits.substring(1);
+                }
+                return digits;
               }
 
-              await Future.delayed(Duration(milliseconds: 350));
+              final normalizedExpected = phoneNumbers.map(normalizePhone).toSet();
+              final normalizedFound = (participantNumbers as List).map((n) => normalizePhone(n.toString())).toSet();
 
-              // Add all recipients properly this time
-              for (int i = 0; i < phoneNumbers.length; i++) {
-                await page.keyboard.type(phoneNumbers[i], delay: Duration(milliseconds: 50));
-                await Future.delayed(Duration(milliseconds: 600));
-                await page.keyboard.press(Key.enter);
-                await Future.delayed(Duration(milliseconds: 500));
-                if (debugMode) print('  Added recipient ${i + 1}: ${phoneNumbers[i]}');
+              if (normalizedExpected.length == normalizedFound.length &&
+                  normalizedExpected.difference(normalizedFound).isEmpty) {
+                if (debugMode) print('  ✓ Existing group matches via details! Using this conversation.');
+                useExistingGroup = true;
+                await page.keyboard.press(Key.escape);
+                await Future.delayed(Duration(milliseconds: 250));
+              } else {
+                if (debugMode) print('  ✗ Details mismatch (expected ${normalizedExpected.length}, found ${normalizedFound.length}). Creating new group.');
+                await page.keyboard.press(Key.escape);
+                await Future.delayed(Duration(milliseconds: 125));
+                await page.keyboard.press(Key.escape);
+                await Future.delayed(Duration(milliseconds: 250));
               }
+            } else {
+              if (debugMode) print('  ✗ Could not open details panel. Creating new group.');
+              await page.keyboard.press(Key.escape);
+              await Future.delayed(Duration(milliseconds: 250));
             }
+          } else {
+            // Can't verify — assume the suggestion was correct and proceed.
+            // This matches the original behavior (click suggestion, continue).
+            if (debugMode) print('  No chips and no menu found — assuming suggestion is correct, proceeding.');
+            useExistingGroup = true;
           }
         }
       } else {
         // No existing group found, recipients already added above
         if (debugMode) print('  No existing group found, continuing with new group...');
       }
+
+      // If an existing group was selected but didn't match, navigate away and recreate
+      if (existingGroupFound && !useExistingGroup) {
+        if (debugMode) print('  Selected group was incorrect, navigating back to create new group...');
+
+        // Navigate to main page for a clean state (more reliable than clicking back)
+        await page.goto('https://messages.google.com/web',
+          wait: Until.domContentLoaded,
+          timeout: Duration(seconds: 30));
+        await page.waitForSelector(startChatSelector, timeout: Duration(seconds: 15));
+        await Future.delayed(Duration(milliseconds: 500));
+
+        await page.evaluate('''(selector) => {
+          const element = document.querySelector(selector);
+          if (element) element.click();
+        }''', args: [startChatSelector]);
+        await Future.delayed(Duration(milliseconds: 1000));
+
+        final groupChatRetry = await page.evaluate('''() => {
+          const btn = document.querySelector('[data-e2e-start-group-chat-button]');
+          if (btn) {
+            btn.click();
+            return true;
+          }
+          return false;
+        }''');
+
+        if (!groupChatRetry) {
+          throw Exception('Could not restart group chat creation');
+        }
+
+        await Future.delayed(Duration(milliseconds: 350));
+
+        // Add all recipients; press Escape before Enter to dismiss any suggestion dropdown
+        // so we don't accidentally navigate into an existing group conversation
+        for (int i = 0; i < phoneNumbers.length; i++) {
+          await page.keyboard.type(phoneNumbers[i], delay: Duration(milliseconds: 50));
+          await Future.delayed(Duration(milliseconds: 1000));
+          await page.keyboard.press(Key.escape);
+          await Future.delayed(Duration(milliseconds: 200));
+          await page.keyboard.press(Key.enter);
+          await Future.delayed(Duration(milliseconds: 1000));
+          if (debugMode) print('  Added recipient ${i + 1}: ${phoneNumbers[i]}');
+        }
+      }
+      // If existingGroupFound == false, numbers are already typed from the initial loop above
 
       // Click "Next" button (may need to click twice - once to show group name field, once to skip it)
       for (int clickCount = 0; clickCount < 2; clickCount++) {
@@ -885,7 +944,7 @@ Future<bool> sendMessage({
     await page.keyboard.press(Key.enter);
 
     // Wait for message to be sent and verify
-    await Future.delayed(Duration(milliseconds: 1500)); // Increased wait time for sending
+    await Future.delayed(Duration(milliseconds: 2500)); // Increased wait time for sending
 
     // Debug: Take screenshot after send attempt
     if (debugMode) {

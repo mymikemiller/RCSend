@@ -5,8 +5,8 @@ A Dart script that uses Puppeteer to automate sending text messages through Goog
 ## Example usage
 
 ```
-rm .send_state.json
-dart send_batch.dart -p recipients.txt -f message.txt -i ai_filmmaking.jpg
+cd ~/projects/rcsend
+caffeinate -d dart send_batch.dart -p recipients.txt -f message.txt -i image.jpg
 ```
 
 ## Prerequisites

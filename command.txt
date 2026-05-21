@@ -1,0 +1,2 @@
+cd ~/projects/rcsend
+caffeinate -d dart send_batch.dart -p recipients.txt -f message.txt -i image.jpg
