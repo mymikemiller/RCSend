@@ -866,13 +866,6 @@ Future<bool> sendMessage({
 
               dropTarget.dispatchEvent(dropEvent);
 
-              const pasteEvent = new ClipboardEvent('paste', {
-                clipboardData: dataTransfer,
-                bubbles: true,
-                cancelable: true
-              });
-              dropTarget.dispatchEvent(pasteEvent);
-
               return true;
             } catch (e) {
               console.error('Drop simulation error:', e);
