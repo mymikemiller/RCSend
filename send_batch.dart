@@ -253,7 +253,7 @@ Future<void> main(List<String> arguments) async {
   print('Status: $sentCount sent, $failedCount failed, $pendingCount pending');
   print('');
 
-  if (pendingCount == 0) {
+  if (pendingCount == 0 && failedCount == 0) {
     print('All messages already sent! Nothing to do.');
     exit(0);
   }
@@ -349,23 +349,15 @@ Future<void> main(List<String> arguments) async {
     print('Starting batch send...');
     print('');
 
-    // Process each pending recipient
-    int processedCount = sentCount;
-    int totalCount = recipients.length;
+    final totalCount = recipients.length;
 
-    for (var recipient in recipients) {
-      if (state.phoneStatus[recipient.stateKey] != 'pending') {
-        continue; // Skip already processed
-      }
-
-      processedCount++;
-      final percentage = (processedCount * 100 / totalCount).toStringAsFixed(1);
-
-      print('[$processedCount/$totalCount - $percentage%] Sending to: $recipient');
-
+    // Attempts one recipient. Never prompts: failures are recorded as 'failed'
+    // and the batch moves on. In retry mode, sendMessage first checks whether
+    // the most recent message in the conversation already matches.
+    Future<void> attempt(Recipient recipient, String label, {required bool isRetry}) async {
+      print('[$label] ${isRetry ? "Retrying" : "Sending to"}: $recipient');
       try {
-        // Send the message (pass all phone numbers for group messages)
-        final success = await sendMessage(
+        final result = await sendMessage(
           page: page,
           phoneNumbers: recipient.phoneNumbers,
           messageText: messageText,
@@ -373,59 +365,53 @@ Future<void> main(List<String> arguments) async {
           startChatSelector: foundSelector!,
           debugMode: debugMode,
         );
-
-        if (success) {
-          state.phoneStatus[recipient.stateKey] = 'sent';
-          state.save(stateFile);
-          print('  ✓ Successfully sent to ${recipient.name}');
+        state.phoneStatus[recipient.stateKey] = 'sent';
+        state.save(stateFile);
+        if (result == SendResult.alreadySent) {
+          print('  ✓ Latest message to ${recipient.name} already matches — marked sent, no retry needed');
         } else {
-          throw Exception('Send verification failed');
+          print('  ✓ Successfully sent to ${recipient.name}');
         }
-
       } catch (e) {
+        // A closed browser fails every remaining recipient instantly; stop rather than mark them failed
+        final msg = e.toString();
+        if (msg.contains('Session closed') || msg.contains('Target closed') || msg.contains('Connection closed')) {
+          print('  ✗ Browser session closed while sending to ${recipient.name}; stopping batch.');
+          rethrow;
+        }
         print('  ✗ ERROR sending to ${recipient.name}: $e');
         state.phoneStatus[recipient.stateKey] = 'failed';
         state.save(stateFile);
-
-        // Stop and ask user what to do
-        print('');
-        print('╔════════════════════════════════════════════════════════════════╗');
-        print('║  ERROR OCCURRED                                                ║');
-        print('╠════════════════════════════════════════════════════════════════╣');
-        final recipientStr = recipient.toString();
-        final recipientDisplay = recipientStr.length > 47 ? recipientStr.substring(0, 44) + '...' : recipientStr.padRight(47);
-        print('║  Failed to send to: $recipientDisplay║');
-        final errorStr = e.toString();
-        final errorDisplay = errorStr.length > 54 ? errorStr.substring(0, 51) + '...' : errorStr.padRight(54);
-        print('║  Error: $errorDisplay║');
-        print('║                                                                ║');
-        print('║  What would you like to do?                                    ║');
-        print('║    [R] Retry this recipient                                    ║');
-        print('║    [S] Skip this recipient and continue                        ║');
-        print('║    [A] Abort batch send                                        ║');
-        print('╚════════════════════════════════════════════════════════════════╝');
-        print('');
-        print('Enter choice (R/S/A): ');
-
-        final choice = stdin.readLineSync()?.toUpperCase() ?? 'A';
-
-        if (choice == 'R') {
-          // Reset to pending and retry
-          state.phoneStatus[recipient.stateKey] = 'pending';
-          state.save(stateFile);
-          processedCount--; // Don't count this attempt
-          print('Retrying...');
-          continue;
-        } else if (choice == 'S') {
-          print('Skipping ${recipient.name} and continuing...');
-          continue;
-        } else {
-          print('Aborting batch send.');
-          break;
-        }
+        // Reset the UI so the next recipient starts from a clean main screen
+        try {
+          await page.goto('https://messages.google.com/web',
+            wait: Until.domContentLoaded,
+            timeout: Duration(seconds: 30));
+          await page.waitForSelector(foundSelector!, timeout: Duration(seconds: 15));
+        } catch (_) {}
       }
-
       print('');
+    }
+
+    // Pass 1: every pending recipient
+    int processedCount = sentCount;
+    for (var recipient in recipients) {
+      if (state.phoneStatus[recipient.stateKey] != 'pending') continue;
+      processedCount++;
+      final percentage = (processedCount * 100 / totalCount).toStringAsFixed(1);
+      await attempt(recipient, '$processedCount/$totalCount - $percentage%', isRetry: false);
+    }
+
+    // Pass 2: retry failures (each checks the last message first)
+    final retryList = recipients.where((r) => state.phoneStatus[r.stateKey] == 'failed').toList();
+    if (retryList.isNotEmpty) {
+      print('═══════════════════════════════════════════════════════════');
+      print('  RETRYING ${retryList.length} FAILED RECIPIENT(S)');
+      print('═══════════════════════════════════════════════════════════');
+      print('');
+      for (var i = 0; i < retryList.length; i++) {
+        await attempt(retryList[i], 'retry ${i + 1}/${retryList.length}', isRetry: true);
+      }
     }
 
     print('');
@@ -458,8 +444,12 @@ Future<void> main(List<String> arguments) async {
   }
 }
 
-/// Sends a message to one or more recipients (supports group messages) and verifies it was sent
-Future<bool> sendMessage({
+enum SendResult { sent, alreadySent }
+
+/// Sends a message to one or more recipients (supports group messages) and verifies it was sent.
+/// The conversation's most recent outgoing message is checked first (on every send, not just
+/// retries) and nothing is sent if it already matches the text/image.
+Future<SendResult> sendMessage({
   required Page page,
   required List<String> phoneNumbers,
   required String? messageText,
@@ -484,22 +474,29 @@ Future<bool> sendMessage({
     // For group messages with multiple recipients, check for existing group first
     if (phoneNumbers.length > 1) {
       // Click "Start group chat" button
-      final groupChatClicked = await page.evaluate('''() => {
-        const selectors = [
-          '[data-e2e-start-group-chat-button]',
-          '[data-e2e-start-group-chat-button=""]',
-          'button[aria-label*="group"]',
-        ];
+      // The new-chat panel can take a while to render, so poll instead of checking once
+      dynamic groupChatClicked;
+      final groupDeadline = DateTime.now().add(Duration(seconds: 10));
+      while (true) {
+        groupChatClicked = await page.evaluate('''() => {
+          const selectors = [
+            '[data-e2e-start-group-chat-button]',
+            '[data-e2e-start-group-chat-button=""]',
+            'button[aria-label*="group"]',
+          ];
 
-        for (const selector of selectors) {
-          const btn = document.querySelector(selector);
-          if (btn) {
-            btn.click();
-            return selector;
+          for (const selector of selectors) {
+            const btn = document.querySelector(selector);
+            if (btn) {
+              btn.click();
+              return selector;
+            }
           }
-        }
-        return null;
-      }''');
+          return null;
+        }''');
+        if (groupChatClicked != null || DateTime.now().isAfter(groupDeadline)) break;
+        await Future.delayed(Duration(milliseconds: 250));
+      }
 
       if (groupChatClicked == null) {
         throw Exception('Could not find "Start group chat" button');
@@ -754,7 +751,8 @@ Future<bool> sendMessage({
 
     // Wait for the message input box to appear
     final messageFieldSelectors = [
-      '[data-e2e-message-input-box]',
+      // [data-e2e-message-input-box] alone also matches a hidden <textarea>, so qualify it
+      'div[contenteditable][data-e2e-message-input-box]',
       'div[contenteditable="true"]',
       '[role="textbox"]',
       '[aria-label*="Text message"]',
@@ -762,52 +760,89 @@ Future<bool> sendMessage({
 
     bool messageFieldFound = false;
     String? messageFieldSelector;
-    for (var selector in messageFieldSelectors) {
-      try {
-        if (debugMode) print('  Checking for message field: $selector');
-        await page.waitForSelector(selector, timeout: Duration(seconds: 15));
-        messageFieldSelector = selector;
+    // Poll every selector together (rather than waiting out each one in turn) so a missing field
+    // costs one timeout, not one per selector
+    final fieldDeadline = DateTime.now().add(Duration(seconds: 15));
+    while (!messageFieldFound && DateTime.now().isBefore(fieldDeadline)) {
+      final found = await page.evaluate('''(selectors) => {
+        for (const selector of selectors) {
+          const el = Array.from(document.querySelectorAll(selector))
+            .find(e => e.offsetWidth > 0 && e.offsetHeight > 0);
+          if (el) return selector;
+        }
+        return null;
+      }''', args: [messageFieldSelectors]);
+      if (found != null) {
+        messageFieldSelector = found as String;
         messageFieldFound = true;
-        if (debugMode) print('  ✓ Found message field: $selector');
-        await Future.delayed(Duration(milliseconds:125));
-        break;
-      } catch (e) {
-        if (debugMode) print('  ✗ Not found: $selector');
-        continue;
+        if (debugMode) print('  ✓ Found message field: $messageFieldSelector');
+        await Future.delayed(Duration(milliseconds: 125));
+      } else {
+        await Future.delayed(Duration(milliseconds: 150));
       }
     }
 
     if (!messageFieldFound || messageFieldSelector == null) {
+      if (debugMode) {
+        // Capture what the page looked like so we can tell why the conversation didn't open
+        try {
+          final state = await page.evaluate('''() => ({
+            url: location.href,
+            chips: Array.from(document.querySelectorAll('mws-recipient-chip, [data-e2e-contact-chip], .chip')).map(e => e.innerText.trim()),
+            suggestions: Array.from(document.querySelectorAll('mws-contact-list-item, [data-e2e-contact-row]')).length,
+            textboxes: Array.from(document.querySelectorAll('input, textarea, [contenteditable]')).map(e => e.tagName + ':' + (e.getAttribute('aria-label') || e.placeholder || '') + ':' + (e.offsetWidth > 0)),
+            body: document.body.innerText.slice(0, 300).replace(/\\s+/g, ' '),
+          })''');
+          print('    Debug: page state at failure: $state');
+        } catch (e) {
+          print('    Debug: could not capture page state: $e');
+        }
+      }
       throw Exception('Could not find message field');
     }
 
-    // Click the message field to focus it first (always do this)
-    final field = await page.$(messageFieldSelector);
-    if (field != null) {
-      await field.click();
-      await Future.delayed(Duration(milliseconds: 125));
+    if (await lastMessageMatches(page, messageText, imagePath != null, debugMode)) {
+      await page.goto('https://messages.google.com/web',
+        wait: Until.domContentLoaded,
+        timeout: Duration(seconds: 30));
+      await page.waitForSelector(startChatSelector, timeout: Duration(seconds: 10));
+      return SendResult.alreadySent;
     }
+
+    // Click the message field to focus it first (always do this)
+    // The field can exist but not be laid out yet; retry the click until it is clickable
+    for (int attempt = 1; ; attempt++) {
+      try {
+        final field = await page.waitForSelector(messageFieldSelector, timeout: Duration(seconds: 5), visible: true);
+        await field?.click();
+        break;
+      } catch (e) {
+        if (attempt >= 6) rethrow;
+        if (debugMode) print('  Message field not clickable yet (attempt $attempt): $e');
+        await Future.delayed(Duration(milliseconds: 500));
+      }
+    }
+    await Future.delayed(Duration(milliseconds: 125));
 
     // Insert message text FIRST if provided (before image)
     if (messageText != null && messageText.isNotEmpty) {
       if (debugMode) print('  Copying message text to clipboard and pasting...');
 
-      // First, copy text to clipboard
-      await page.evaluate('''(text) => {
-        return navigator.clipboard.writeText(text);
-      }''', args: [messageText]);
-
-      // Wait a moment for clipboard to be set
-      await Future.delayed(Duration(milliseconds: 75));
-
-      // Ensure the field is focused
-      final field = await page.$(messageFieldSelector);
-      if (field != null) {
-
-        await page.keyboard.down(Key.shift);
-        await page.keyboard.press(Key.insert);
-        await page.keyboard.up(Key.shift);
-      }
+      // Pasting multi-line text makes the editor emit <div><br></div> blocks that serialize with an
+      // extra newline on send (blank lines double). insertLineBreak (what Shift+Enter does) keeps
+      // plain newlines, so insert each line as text and join them with line breaks.
+      final inserted = await page.evaluate('''(selector, text) => {
+        const el = document.querySelector(selector);
+        if (!el) return false;
+        el.focus();
+        const lines = text.replace(/\\r\\n/g, '\\n').split('\\n');
+        lines.forEach((line, i) => {
+          if (i > 0) document.execCommand('insertLineBreak');
+          if (line) document.execCommand('insertText', false, line);
+        });
+        return true;
+      }''', args: [messageFieldSelector, messageText]);
+      if (inserted != true) throw Exception('Could not insert message text');
     }
 
     // Attach image AFTER text if provided
@@ -978,16 +1013,20 @@ Future<bool> sendMessage({
       await Future.delayed(Duration(milliseconds: 500));
     }
 
-    // Navigate back to main screen for next message
-    await page.goto('https://messages.google.com/web',
-      wait: Until.domContentLoaded,
-      timeout: Duration(seconds: 30));
+    // The Start chat button lives in the conversation list, so there is no need to reload the page;
+    // only fall back to a reload if the button isn't available.
+    try {
+      await page.waitForSelector(startChatSelector, timeout: Duration(seconds: 5), visible: true);
+    } catch (_) {
+      if (debugMode) print('  Start chat button not available, reloading page...');
+      await page.goto('https://messages.google.com/web',
+        wait: Until.domContentLoaded,
+        timeout: Duration(seconds: 30));
+      await page.waitForSelector(startChatSelector, timeout: Duration(seconds: 10));
+    }
+    await Future.delayed(Duration(milliseconds: 125));
 
-    // Wait for start chat button again
-    await page.waitForSelector(startChatSelector, timeout: Duration(seconds: 10));
-              await Future.delayed(Duration(milliseconds: 125));
-
-    return true;
+    return SendResult.sent;
 
   } catch (e) {
     if (debugMode) {
@@ -1055,6 +1094,61 @@ Future<bool> waitForMessageConfirmation(Page page, String messageText, bool debu
 
   } catch (e) {
     if (debugMode) print('    Debug: waitForMessageConfirmation error: $e');
+    return false;
+  }
+}
+
+/// Returns true if the most recent outgoing message(s) in the open conversation contain the
+/// given text and (if [expectImage]) an image. A text+image send may be one or two bubbles,
+/// so the trailing outgoing bubbles (up to 2) are combined.
+Future<bool> lastMessageMatches(Page page, String? messageText, bool expectImage, bool debugMode) async {
+  try {
+    // Bubble text comes from textContent, which drops newlines, so ignore all whitespace
+    String normalize(String t) => t.replaceAll(RegExp(r'\s+'), '');
+
+    // Give the conversation history a moment to render
+    List<dynamic> bubbles = [];
+    final deadline = DateTime.now().add(Duration(seconds: 3));
+    while (DateTime.now().isBefore(deadline)) {
+      final raw = await page.evaluate('''() => {
+        const wrappers = Array.from(document.querySelectorAll('mws-message-wrapper')).slice(-2);
+        return wrappers.map(w => {
+          let outgoing = null;
+          if (w.classList.contains('outgoing') || w.hasAttribute('is-outgoing') || w.querySelector('.outgoing')) {
+            outgoing = true;
+          } else if (w.classList.contains('incoming') || w.querySelector('.incoming')) {
+            outgoing = false;
+          }
+          const text = Array.from(w.querySelectorAll('.text-msg.msg-content'))
+            .map(e => e.textContent || '').join(' ');
+          const hasImage = !!w.querySelector('mws-image-message-part, img[src^="blob:"], img[src^="data:"]');
+          return { outgoing, text, hasImage };
+        });
+      }''');
+      bubbles = raw is List ? raw : [];
+      if (bubbles.isNotEmpty) break;
+      await Future.delayed(Duration(milliseconds: 250));
+    }
+
+    if (bubbles.isEmpty) return false;
+
+    // Walk back from the newest bubble while it is outgoing (outgoing == null is treated as outgoing)
+    var text = '';
+    var hasImage = false;
+    for (final b in bubbles.reversed) {
+      if (b['outgoing'] == false) break;
+      text = '${b['text']} $text';
+      hasImage = hasImage || b['hasImage'] == true;
+    }
+
+    final textOk = messageText == null ||
+        messageText.trim().isEmpty ||
+        normalize(text).contains(normalize(messageText));
+    final imageOk = !expectImage || hasImage;
+    if (debugMode) print('    Debug: last-message check textOk=$textOk imageOk=$imageOk bubbles=$bubbles');
+    return textOk && imageOk;
+  } catch (e) {
+    if (debugMode) print('    Debug: lastMessageMatches error: $e');
     return false;
   }
 }
